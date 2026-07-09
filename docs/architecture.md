@@ -26,3 +26,9 @@ average fewer than eight native samples into a daily product.
 
 Published Zarr datasets are immutable artifacts, not Git content and not
 package data. `ngehtsim` will access them through a provider interface.
+
+## Initial Migration
+
+The first migration path imports the existing native alltimes and daily legacy
+files. The importer validates their binary record lengths, coordinate
+alignment, and complete native-day coverage before writing Zarr.
