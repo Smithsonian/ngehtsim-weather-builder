@@ -1,0 +1,14 @@
+# Example only. Do not commit machine-specific paths or credentials.
+
+[merra2]
+root = "/absolute/path/to/MERRA2_data"
+
+[am]
+executable = "/absolute/path/to/am_serial"
+
+[output]
+work_root = "/absolute/path/to/weather-work"
+dataset_root = "/absolute/path/to/weather-datasets"
+
+[dataset]
+identifier = "draft-2026.1"
