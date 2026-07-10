@@ -36,8 +36,19 @@ record for that particular artifact, and includes:
 - SHA-256 fingerprints of the frequency grid and all PCA arrays;
 - the site-registry hash and fingerprints of both legacy PCA directories;
 - SHA-256 hashes and sizes for every imported legacy binary file;
-- per-site/month native and daily record counts, date range, and years; and
+- per-site/month native and daily record counts, date range, years, and any
+  explicitly removed malformed daily records; and
 - the validation checks that completed before publication.
 
 The manifest deliberately records source paths relative to `--legacy-root`,
 never machine-specific absolute cluster paths.
+
+## Historic Daily-Record Repair
+
+The legacy postprocessor could write all-zero daily inputs for unavailable
+days, producing non-finite opacity coefficients and duplicate dates. The
+importer's `--repair-invalid-daily-records` option is an explicit migration
+policy for this known defect. It drops only daily rows containing non-finite
+values, then requires native/daily date equality and full calendar coverage.
+It cannot manufacture missing weather data or make an incomplete partition
+pass validation.

@@ -13,7 +13,7 @@ from uuid import uuid4
 import numpy as np
 
 from .dataset import initialize_dataset, load_pca_basis, write_partition
-from .legacy import read_legacy_partition
+from .legacy import LegacyFormatError, read_legacy_partition, repair_invalid_daily_records
 from .manifest import ImportedPartition, build_manifest, write_manifest
 from .validation import validate_complete_calendar_coverage, validate_written_partition
 
@@ -125,6 +125,14 @@ def _arguments() -> argparse.ArgumentParser:
         action="store_true",
         help="Discover and import every SITE/MMMmm directory below --legacy-root.",
     )
+    parser.add_argument(
+        "--repair-invalid-daily-records",
+        action="store_true",
+        help=(
+            "Explicitly remove malformed legacy daily rows only when native and daily "
+            "coverage validates afterward."
+        ),
+    )
     parser.add_argument("--component-count", type=int, default=40)
     parser.add_argument("--frequency-start-ghz", type=float, default=0.0)
     parser.add_argument("--frequency-stop-ghz", type=float, default=2000.0)
@@ -188,10 +196,29 @@ def main(argv: list[str] | None = None) -> int:
             },
         )
         for selection in selections:
-            partition = read_legacy_partition(
-                selection.source,
-                component_count=basis.component_count,
-            )
+            try:
+                if args.repair_invalid_daily_records:
+                    repair = repair_invalid_daily_records(
+                        selection.source,
+                        component_count=basis.component_count,
+                    )
+                    partition = repair.partition
+                    removed_daily_records = repair.removed_daily_records
+                else:
+                    partition = read_legacy_partition(
+                        selection.source,
+                        component_count=basis.component_count,
+                    )
+                    removed_daily_records = 0
+            except LegacyFormatError as error:
+                raise LegacyFormatError(
+                    "Invalid legacy partition {0}/{1:02d} at {2}: {3}".format(
+                        selection.site,
+                        selection.month,
+                        selection.source,
+                        error,
+                    )
+                ) from error
             if not np.all(partition.native.month == selection.month):
                 raise ValueError("Native records do not match requested month for {0}.".format(selection.site))
             if not np.all(partition.daily.month == selection.month):
@@ -206,8 +233,13 @@ def main(argv: list[str] | None = None) -> int:
                     month=selection.month,
                     source=selection.source,
                     coverage=coverage,
+                    removed_daily_records=removed_daily_records,
                 )
             )
+
+        removed_total = sum(item.removed_daily_records for item in imported)
+        if removed_total:
+            root.attrs["legacy_invalid_daily_records_removed"] = removed_total
 
         manifest = build_manifest(
             dataset_id=args.dataset_id,

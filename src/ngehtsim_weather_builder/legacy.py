@@ -44,6 +44,14 @@ class WeatherPartition:
     daily: WeatherRecords
 
 
+@dataclass(frozen=True)
+class DailyRecordRepair:
+    """A validated legacy partition after removing malformed daily rows."""
+
+    partition: WeatherPartition
+    removed_daily_records: int
+
+
 def _record_dtype(component_count: int, with_time: bool, coefficients: bool) -> np.dtype:
     fields: list[tuple[object, ...]] = [
         ("year", "<i2"),
@@ -220,16 +228,68 @@ def _validate_partition(partition: WeatherPartition, component_count: int) -> No
         raise LegacyFormatError("Native and daily weather records cover different dates.")
 
 
-def read_legacy_partition(directory: str | Path, component_count: int = 40) -> WeatherPartition:
-    """Read and validate one legacy site-month directory."""
+def _load_legacy_partition(directory: str | Path, component_count: int) -> WeatherPartition:
+    """Read one legacy partition before whole-partition validation."""
 
     source = Path(directory)
-    partition = WeatherPartition(
+    return WeatherPartition(
         native=_read_records(source, "_alltimes", with_time=True, component_count=component_count),
         daily=_read_records(source, "", with_time=False, component_count=component_count),
     )
+
+
+def read_legacy_partition(directory: str | Path, component_count: int = 40) -> WeatherPartition:
+    """Read and validate one legacy site-month directory without modifying it."""
+
+    partition = _load_legacy_partition(directory, component_count)
     _validate_partition(partition, component_count)
     return partition
+
+
+def _select_records(records: WeatherRecords, mask: np.ndarray) -> WeatherRecords:
+    return WeatherRecords(
+        year=records.year[mask],
+        month=records.month[mask],
+        day=records.day[mask],
+        time_index=records.time_index[mask] if records.time_index is not None else None,
+        tau_coefficients=records.tau_coefficients[mask],
+        tb_coefficients=records.tb_coefficients[mask],
+        pwv_mm=records.pwv_mm[mask],
+        wind_speed_m_s=records.wind_speed_m_s[mask],
+        surface_pressure_mbar=records.surface_pressure_mbar[mask],
+        surface_temperature_k=records.surface_temperature_k[mask],
+    )
+
+
+def repair_invalid_daily_records(
+    directory: str | Path,
+    component_count: int = 40,
+) -> DailyRecordRepair:
+    """Drop malformed legacy daily rows only when complete coverage is restored.
+
+    This explicit migration repair is for the historic postprocessing bug that
+    wrote duplicate daily rows with non-finite PCA coefficients. It never
+    alters native records or interpolates values. Validation after filtering
+    guarantees that a matching, complete daily record remains for every native
+    date; otherwise the repair is rejected.
+    """
+
+    partition = _load_legacy_partition(directory, component_count)
+    daily = partition.daily
+    valid = (
+        np.all(np.isfinite(daily.tau_coefficients), axis=1)
+        & np.all(np.isfinite(daily.tb_coefficients), axis=1)
+        & np.isfinite(daily.pwv_mm)
+        & np.isfinite(daily.wind_speed_m_s)
+        & np.isfinite(daily.surface_pressure_mbar)
+        & np.isfinite(daily.surface_temperature_k)
+    )
+    repaired = WeatherPartition(native=partition.native, daily=_select_records(daily, valid))
+    _validate_partition(repaired, component_count)
+    return DailyRecordRepair(
+        partition=repaired,
+        removed_daily_records=int(np.count_nonzero(~valid)),
+    )
 
 
 def validate_partition(partition: WeatherPartition, component_count: int | None = None) -> None:

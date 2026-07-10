@@ -122,6 +122,29 @@ def _write_legacy_partition(directory, partition):
             )
 
 
+def _with_invalid_duplicate_daily_record(partition):
+    daily = partition.daily
+    duplicate_tau = np.concatenate((daily.tau_coefficients, daily.tau_coefficients[:1].copy()))
+    duplicate_tau[-1] = np.nan
+    duplicate_daily = WeatherRecords(
+        year=np.concatenate((daily.year, daily.year[:1])),
+        month=np.concatenate((daily.month, daily.month[:1])),
+        day=np.concatenate((daily.day, daily.day[:1])),
+        time_index=None,
+        tau_coefficients=duplicate_tau,
+        tb_coefficients=np.concatenate((daily.tb_coefficients, daily.tb_coefficients[:1])),
+        pwv_mm=np.concatenate((daily.pwv_mm, daily.pwv_mm[:1])),
+        wind_speed_m_s=np.concatenate((daily.wind_speed_m_s, daily.wind_speed_m_s[:1])),
+        surface_pressure_mbar=np.concatenate(
+            (daily.surface_pressure_mbar, daily.surface_pressure_mbar[:1])
+        ),
+        surface_temperature_k=np.concatenate(
+            (daily.surface_temperature_k, daily.surface_temperature_k[:1])
+        ),
+    )
+    return WeatherPartition(native=partition.native, daily=duplicate_daily)
+
+
 def _write_basis(directory, basis):
     directory.mkdir()
     np.savetxt(directory / "spectrum_mean.txt", basis[0])
@@ -198,3 +221,47 @@ def test_cli_writes_manifest_and_discovers_all_partitions(tmp_path):
     assert manifest["legacy_sources"][0]["path"].startswith("ALMA/04Apr/")
     root = zarr.open_group(store=zarr.storage.LocalStore(output), mode="r")
     assert root.attrs["dataset_id"] == "test-release-v0.1.0"
+
+
+def test_cli_records_explicit_daily_repair_in_manifest(tmp_path):
+    legacy_root = tmp_path / "weather_data_alltimes"
+    source = legacy_root / "ALMA" / "04Apr"
+    _write_legacy_partition(source, _with_invalid_duplicate_daily_record(_complete_partition()))
+
+    tau_basis = tmp_path / "tau_basis"
+    tb_basis = tmp_path / "tb_basis"
+    basis = _basis()
+    _write_basis(tau_basis, (basis.tau_mean, basis.tau_components))
+    _write_basis(tb_basis, (basis.tb_mean, basis.tb_components))
+    site_registry = tmp_path / "Telescope_Site_Matrix.csv"
+    site_registry.write_text("Station\nALMA\n", encoding="utf-8")
+
+    output = tmp_path / "repaired-release.zarr"
+    assert main(
+        [
+            "--output",
+            str(output),
+            "--dataset-id",
+            "test-repaired-release-v0.1.0",
+            "--builder-revision",
+            "test-revision",
+            "--legacy-root",
+            str(legacy_root),
+            "--site-registry",
+            str(site_registry),
+            "--tau-basis",
+            str(tau_basis),
+            "--tb-basis",
+            str(tb_basis),
+            "--component-count",
+            "2",
+            "--repair-invalid-daily-records",
+            "--all-partitions",
+        ]
+    ) == 0
+
+    manifest = json.loads(
+        (tmp_path / "repaired-release.zarr.manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["coverage"][0]["legacy_invalid_daily_records_removed"] == 1
+    assert manifest["validation"]["legacy_invalid_daily_records_removed"] == 1
