@@ -21,6 +21,13 @@ and complete calendar-month coverage, then writes a sidecar JSON manifest.
 The output Zarr directory and its adjacent `.manifest.json` file are immutable
 release artifacts. The command refuses to overwrite either one.
 
+The default import is strict and refuses malformed legacy records. The
+historic archive currently contains a known daily-postprocessing defect. Use
+`--repair-invalid-daily-records` only for that archive: it removes non-finite
+daily rows, then proceeds only if the untouched native records prove that
+complete, one-record-per-date daily coverage remains. Each removal is recorded
+in the output Zarr attributes and manifest.
+
 For example, this creates a small April validation release from the existing
 legacy archive:
 
@@ -38,6 +45,10 @@ ngehtsim-weather-import-legacy \
 
 Replace the final `--partition` argument with `--all-partitions` to import a
 complete legacy archive rooted at `--legacy-root`.
+
+For the historic archive, add `--repair-invalid-daily-records` before
+`--all-partitions`. Do not use this option to conceal incomplete or newly
+generated inputs; those still fail validation.
 
 Use an absolute output path outside either Git checkout. Published weather
 datasets and their manifests must not be committed to this repository.

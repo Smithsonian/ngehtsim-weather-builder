@@ -27,6 +27,7 @@ class ImportedPartition:
     month: int
     source: Path
     coverage: PartitionCoverage
+    removed_daily_records: int = 0
 
 
 def sha256_file(path: str | Path) -> str:
@@ -106,6 +107,16 @@ def build_manifest(
     tau_basis_directory = Path(tau_basis_directory).resolve()
     tb_basis_directory = Path(tb_basis_directory).resolve()
     imported = tuple(partitions)
+    removed_total = sum(item.removed_daily_records for item in imported)
+    checks = [
+        "legacy binary-record validation",
+        "native three-hour timestamp completeness",
+        "native and daily date agreement",
+        "complete calendar-month coverage",
+        "exact Zarr array and dtype comparison",
+    ]
+    if removed_total:
+        checks.append("validated removal of malformed legacy daily records")
 
     return {
         "manifest_version": MANIFEST_VERSION,
@@ -147,19 +158,15 @@ def build_manifest(
                 "years": list(item.coverage.years),
                 "native_records": item.coverage.native_records,
                 "daily_records": item.coverage.daily_records,
+                "legacy_invalid_daily_records_removed": item.removed_daily_records,
                 "calendar_coverage": "complete",
             }
             for item in sorted(imported, key=lambda item: (item.site, item.month))
         ],
         "validation": {
             "status": "passed",
-            "checks": [
-                "legacy binary-record validation",
-                "native three-hour timestamp completeness",
-                "native and daily date agreement",
-                "complete calendar-month coverage",
-                "exact Zarr array and dtype comparison",
-            ],
+            "legacy_invalid_daily_records_removed": removed_total,
+            "checks": checks,
         },
     }
 

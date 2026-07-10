@@ -14,6 +14,8 @@ from collections import OrderedDict
 import io
 import contextlib
 
+from daily_postproc import complete_daily_inputs
+
 ###############################################################
 
 toplevel_dir = './sites/'
@@ -148,8 +150,6 @@ def postproc(pset, system_kwargs, user_kwargs):
         ###############################################################
         # compute daily means
 
-        unique_days = np.unique(daylist)
-
         # initialize lists
         yearlist_dm = list()
         monthlist_dm = list()
@@ -169,15 +169,13 @@ def postproc(pset, system_kwargs, user_kwargs):
             yeardir = years[iyear]
             year = yeardir.split('/')[-1]
 
-            # loop over days
-            for iday in range(len(unique_days)):
+            # aggregate only days that have all eight three-hour inputs
+            for daily_inputs in complete_daily_inputs(yeardir, month):
 
-                dayhere = str(unique_days[iday]).zfill(2)
-
-                # filename lists
-                filenames_tau = np.sort(glob.glob(yeardir+'/'+month+'/output_tau_day'+dayhere+'*.txt'))
-                filenames_Tb = np.sort(glob.glob(yeardir+'/'+month+'/output_Tb_day'+dayhere+'*.txt'))
-                filenames_am = np.sort(glob.glob(yeardir+'/'+month+'/am_input_file_day'+dayhere+'*.txt'))
+                dayhere = str(daily_inputs.day).zfill(2)
+                filenames_tau = daily_inputs.tau
+                filenames_Tb = daily_inputs.tb
+                filenames_am = daily_inputs.am
 
                 # loop over all files and average across the day
                 avg_tau_spec = np.zeros(2001)
@@ -192,11 +190,6 @@ def postproc(pset, system_kwargs, user_kwargs):
                     filename_tau = filenames_tau[ifile]
                     filename_Tb = filenames_Tb[ifile]
                     filename_am = filenames_am[ifile]
-
-                    # extract day + time
-                    day = filename_tau.split('_')[-2][-2:]
-                    itime = filename_tau.split('_')[-1].split('.')[0][-1]
-                    time = float(itime)*3.0
 
                     # PCA coefficients
                     coeffs_tau = np.loadtxt(filename_tau)
@@ -248,12 +241,13 @@ def postproc(pset, system_kwargs, user_kwargs):
                         if foundit:
                             break
 
-                avg_tau_spec /= 8.0
-                avg_Tb_spec /= 8.0
-                avg_PWV /= 8.0
-                avg_windspeed /= 8.0
-                avg_Pbase /= 8.0
-                avg_Tbase /= 8.0
+                sample_count = float(len(filenames_tau))
+                avg_tau_spec /= sample_count
+                avg_Tb_spec /= sample_count
+                avg_PWV /= sample_count
+                avg_windspeed /= sample_count
+                avg_Pbase /= sample_count
+                avg_Tbase /= sample_count
 
                 # recompute PCA components for the average tau spectrum
                 logspec = np.log10(avg_tau_spec) - meanspec_tau
@@ -270,7 +264,7 @@ def postproc(pset, system_kwargs, user_kwargs):
                 # append relevant quantities to the running lists
                 yearlist_dm.append(int(year))
                 monthlist_dm.append(int(month))
-                daylist_dm.append(int(day))
+                daylist_dm.append(int(dayhere))
                 coeffs_tau_list_dm.append(coeffs_tau)
                 coeffs_Tb_list_dm.append(coeffs_Tb)
                 PWV_list_dm.append(avg_PWV)
@@ -580,7 +574,6 @@ print('Input list created.  There are '+str(len(psets))+' work packages to execu
 
 paramsurvey.init(backend='ray')
 results = paramsurvey.map(postproc, psets, verbose=1, group_size=1)
-
 
 
 
