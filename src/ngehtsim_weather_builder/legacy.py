@@ -170,6 +170,9 @@ def _validate_record_arrays(records: WeatherRecords, component_count: int) -> No
     )
     if not all(np.all(np.isfinite(values)) for values in scalar_fields):
         raise LegacyFormatError("Weather records contain non-finite scalar values.")
+    coefficient_fields = (records.tau_coefficients, records.tb_coefficients)
+    if not all(np.all(np.isfinite(values)) for values in coefficient_fields):
+        raise LegacyFormatError("Weather records contain non-finite PCA coefficients.")
 
 
 def _date_rows(records: WeatherRecords) -> np.ndarray:
