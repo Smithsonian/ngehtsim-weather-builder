@@ -11,7 +11,7 @@ from typing import Iterable
 
 import numpy as np
 
-from .dataset import PcaBasis, SCHEMA_VERSION
+from .dataset import NATIVE_SUMMARY_FORMS, PcaBasis, SCHEMA_VERSION
 from .validation import PartitionCoverage
 
 
@@ -114,6 +114,7 @@ def build_manifest(
         "native and daily date agreement",
         "complete calendar-month coverage",
         "exact Zarr array and dtype comparison",
+        "native physical-summary array comparison",
     ]
     if removed_total:
         checks.append("validated removal of malformed legacy daily records")
@@ -126,6 +127,7 @@ def build_manifest(
             "schema_version": SCHEMA_VERSION,
             "native_time_step_hours": 3,
             "native_samples_per_day": 8,
+            "native_summary_forms": list(NATIVE_SUMMARY_FORMS),
             "frequency_ghz": {
                 "count": int(frequency_ghz.size),
                 "sha256": sha256_array(frequency_ghz),

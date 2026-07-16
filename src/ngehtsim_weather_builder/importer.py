@@ -28,5 +28,5 @@ def import_legacy_month(
         component_count=basis.component_count,
     )
     root = initialize_dataset(output_path, basis, frequency_ghz, metadata=metadata)
-    write_partition(root, site, month, partition)
+    write_partition(root, site, month, partition, basis=basis)
     return root

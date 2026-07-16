@@ -225,8 +225,8 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("Daily records do not match requested month for {0}.".format(selection.site))
 
             coverage = validate_complete_calendar_coverage(partition)
-            write_partition(root, selection.site, selection.month, partition)
-            validate_written_partition(root, selection.site, selection.month, partition)
+            write_partition(root, selection.site, selection.month, partition, basis=basis)
+            validate_written_partition(root, selection.site, selection.month, partition, basis=basis)
             imported.append(
                 ImportedPartition(
                     site=selection.site,

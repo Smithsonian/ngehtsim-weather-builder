@@ -50,6 +50,11 @@ For the historic archive, add `--repair-invalid-daily-records` before
 `--all-partitions`. Do not use this option to conceal incomplete or newly
 generated inputs; those still fail validation.
 
+Schema 0.2.0 additionally stores physical three-hour native summaries for
+each site-month. The summaries match `ngehtsim`'s representative weather
+forms (`mean`, `median`, `good`, and `bad`) and preserve raw native records
+for exact-time interpolation.
+
 Use an absolute output path outside either Git checkout. Published weather
 datasets and their manifests must not be committed to this repository.
 

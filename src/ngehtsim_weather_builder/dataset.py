@@ -12,7 +12,17 @@ import zarr
 from .legacy import WeatherPartition, WeatherRecords, validate_partition
 
 
-SCHEMA_VERSION = "0.1.0"
+SCHEMA_VERSION = "0.2.0"
+NATIVE_SAMPLES_PER_DAY = 8
+NATIVE_SUMMARY_FORMS = ("mean", "median", "good", "bad")
+NATIVE_SUMMARY_FIELDS = (
+    "opacity",
+    "brightness_temperature",
+    "pwv_mm",
+    "wind_speed_m_s",
+    "surface_pressure_mbar",
+    "surface_temperature_k",
+)
 
 
 @dataclass(frozen=True)
@@ -107,7 +117,12 @@ def initialize_dataset(
         {
             "schema_version": SCHEMA_VERSION,
             "native_time_step_hours": 3,
-            "native_samples_per_day": 8,
+            "native_samples_per_day": NATIVE_SAMPLES_PER_DAY,
+            "native_summary_forms": list(NATIVE_SUMMARY_FORMS),
+            "native_summary_derivation": (
+                "Reconstruct native spectra and reduce physical quantities by "
+                "three-hour UTC time index across the full site-month history."
+            ),
             "daily_derivation": (
                 "Reconstruct native spectra, average physical tau and Tb spectra, "
                 "then project the daily averages onto the PCA basis."
@@ -148,11 +163,89 @@ def _write_records(group: zarr.Group, records: WeatherRecords) -> None:
         group.create_array(name, data=data, chunks=_chunks(data))
 
 
+def _native_reducer(form: str):
+    if form == "mean":
+        return np.nanmean
+    if form == "median":
+        return np.nanmedian
+    if form == "good":
+        return lambda values, axis: np.nanpercentile(values, 15.87, axis=axis)
+    if form == "bad":
+        return lambda values, axis: np.nanpercentile(values, 84.13, axis=axis)
+    raise ValueError("Unsupported native weather summary form: {0}".format(form))
+
+
+def native_summaries(
+    partition: WeatherPartition,
+    basis: PcaBasis,
+) -> dict[str, dict[str, np.ndarray]]:
+    """Reduce native records into physical three-hour site-month summaries."""
+
+    _validate_basis(basis)
+    validate_partition(partition, component_count=basis.component_count)
+    native = partition.native
+    if native.time_index is None:
+        raise ValueError("Native weather records require a time index.")
+
+    values = {
+        "opacity": np.power(
+            10.0,
+            basis.tau_mean + native.tau_coefficients @ basis.tau_components,
+        ),
+        "brightness_temperature": (
+            basis.tb_mean + native.tb_coefficients @ basis.tb_components
+        ),
+        "pwv_mm": native.pwv_mm,
+        "wind_speed_m_s": native.wind_speed_m_s,
+        "surface_pressure_mbar": native.surface_pressure_mbar,
+        "surface_temperature_k": native.surface_temperature_k,
+    }
+    summaries: dict[str, dict[str, np.ndarray]] = {}
+    for form in NATIVE_SUMMARY_FORMS:
+        reducer = _native_reducer(form)
+        summary = {}
+        for name, source in values.items():
+            reduced = []
+            for time_index in range(NATIVE_SAMPLES_PER_DAY):
+                mask = native.time_index == time_index
+                if not np.any(mask):
+                    raise ValueError(
+                        "Native weather records are missing time index {0}.".format(time_index)
+                    )
+                reduced.append(reducer(source[mask], axis=0))
+            summary[name] = np.asarray(reduced, dtype=np.float64)
+        summaries[form] = summary
+    return summaries
+
+
+def _basis_from_root(root: zarr.Group) -> PcaBasis:
+    """Load the stored PCA basis for direct API calls without an explicit basis."""
+
+    return PcaBasis(
+        tau_mean=np.asarray(root["pca/tau/mean"][:], dtype=np.float64),
+        tau_components=np.asarray(root["pca/tau/components"][:], dtype=np.float64),
+        tb_mean=np.asarray(root["pca/tb/mean"][:], dtype=np.float64),
+        tb_components=np.asarray(root["pca/tb/components"][:], dtype=np.float64),
+    )
+
+
+def _write_native_summaries(
+    group: zarr.Group,
+    partition: WeatherPartition,
+    basis: PcaBasis,
+) -> None:
+    for form, summary in native_summaries(partition, basis).items():
+        form_group = group.require_group(form)
+        for name, values in summary.items():
+            form_group.create_array(name, data=values, chunks=_chunks(values))
+
+
 def write_partition(
     root: zarr.Group,
     site: str,
     month: int,
     partition: WeatherPartition,
+    basis: PcaBasis | None = None,
 ) -> None:
     """Write one validated site-month partition into an initialized dataset."""
 
@@ -161,7 +254,9 @@ def write_partition(
     if month < 1 or month > 12:
         raise ValueError("Month must be an integer from 1 through 12.")
 
-    validate_partition(partition)
+    basis = _basis_from_root(root) if basis is None else basis
+    _validate_basis(basis)
+    validate_partition(partition, component_count=basis.component_count)
     for records in (partition.native, partition.daily):
         if not np.all(records.month == month):
             raise ValueError("Partition record months do not match the requested month.")
@@ -178,3 +273,4 @@ def write_partition(
     daily_group = month_group.require_group("daily")
     daily_group.attrs.update({"cadence": "daily"})
     _write_records(daily_group, partition.daily)
+    _write_native_summaries(month_group.require_group("native_summary"), partition, basis)
