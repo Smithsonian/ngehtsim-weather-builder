@@ -20,9 +20,9 @@ from ngehtsim_weather_builder.validation import (
 def _basis():
     return PcaBasis(
         tau_mean=np.array([1.0, 2.0, 3.0, 4.0]),
-        tau_components=np.arange(8, dtype=np.float64).reshape(2, 4),
+        tau_components=np.arange(8, dtype=np.float64).reshape(2, 4) * 1e-3,
         tb_mean=np.array([5.0, 6.0, 7.0, 8.0]),
-        tb_components=np.arange(8, 16, dtype=np.float64).reshape(2, 4),
+        tb_components=np.arange(8, 16, dtype=np.float64).reshape(2, 4) * 1e-3,
     )
 
 
@@ -170,6 +170,18 @@ def test_validates_complete_calendar_coverage_and_exact_zarr_values(tmp_path):
         validate_written_partition(root, "ALMA", 4, partition)
 
 
+def test_rejects_corrupted_native_summary_values(tmp_path):
+    partition = _complete_partition()
+    output = tmp_path / "weather.zarr"
+    basis = _basis()
+    root = initialize_dataset(output, basis, np.arange(4, dtype=np.float64))
+    write_partition(root, "ALMA", 4, partition, basis=basis)
+
+    root["sites/ALMA/months/04/native_summary/median/opacity"][0, 0] = -1.0
+    with pytest.raises(DatasetValidationError, match="native summary values"):
+        validate_written_partition(root, "ALMA", 4, partition, basis=basis)
+
+
 def test_rejects_incomplete_calendar_month():
     with pytest.raises(DatasetValidationError, match="incomplete"):
         validate_complete_calendar_coverage(_complete_partition(day_count=29))
@@ -217,6 +229,8 @@ def test_cli_writes_manifest_and_discovers_all_partitions(tmp_path):
 
     manifest = json.loads((tmp_path / "release.zarr.manifest.json").read_text(encoding="utf-8"))
     assert manifest["validation"]["status"] == "passed"
+    assert manifest["dataset"]["schema_version"] == "0.2.0"
+    assert manifest["dataset"]["native_summary_forms"] == ["mean", "median", "good", "bad"]
     assert manifest["coverage"][0]["site"] == "ALMA"
     assert manifest["legacy_sources"][0]["path"].startswith("ALMA/04Apr/")
     root = zarr.open_group(store=zarr.storage.LocalStore(output), mode="r")

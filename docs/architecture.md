@@ -13,6 +13,13 @@ the physical spectra, and projecting the averages back onto the PCA basis.
 
 Both native and daily products are retained in each dataset release.
 
+Schema 0.2.0 also stores physical native summaries for each site-month and
+three-hour UTC time index. These are the mean, median, 15.87th-percentile
+(`good`), and 84.13th-percentile (`bad`) quantities across the historical
+records. They avoid repeated PCA reconstruction during representative native
+weather sampling while the raw native records remain available for exact-time
+interpolation.
+
 ## Provenance and Validation
 
 Each dataset release records the builder commit, site-registry hash, PCA-basis

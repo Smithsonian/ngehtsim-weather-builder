@@ -1,6 +1,6 @@
 """Tools for building versioned ngehtsim weather datasets."""
 
-from .dataset import PcaBasis, initialize_dataset, load_pca_basis, write_partition
+from .dataset import PcaBasis, initialize_dataset, load_pca_basis, native_summaries, write_partition
 from .importer import import_legacy_month
 from .legacy import (
     LegacyFormatError,
@@ -10,7 +10,7 @@ from .legacy import (
     validate_partition,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "LegacyFormatError",
@@ -20,6 +20,7 @@ __all__ = [
     "import_legacy_month",
     "initialize_dataset",
     "load_pca_basis",
+    "native_summaries",
     "read_legacy_partition",
     "validate_partition",
     "write_partition",
