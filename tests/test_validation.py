@@ -187,7 +187,7 @@ def test_rejects_incomplete_calendar_month():
         validate_complete_calendar_coverage(_complete_partition(day_count=29))
 
 
-def test_cli_writes_manifest_and_discovers_all_partitions(tmp_path):
+def test_cli_writes_manifest_and_discovers_all_partitions(tmp_path, capsys):
     partition = _complete_partition()
     legacy_root = tmp_path / "weather_data_alltimes"
     source = legacy_root / "ALMA" / "04Apr"
@@ -223,10 +223,15 @@ def test_cli_writes_manifest_and_discovers_all_partitions(tmp_path):
             str(tb_basis),
             "--component-count",
             "2",
+            "--progress",
             "--all-partitions",
         ]
     ) == 0
 
+    output_text = capsys.readouterr().out
+    assert "Importing 1 site-month partitions..." in output_text
+    assert "Completed 1/1 (100.0%): ALMA/04; elapsed " in output_text
+    assert "ETA 0:00:00" in output_text
     manifest = json.loads((tmp_path / "release.zarr.manifest.json").read_text(encoding="utf-8"))
     assert manifest["validation"]["status"] == "passed"
     assert manifest["dataset"]["schema_version"] == "0.2.0"
@@ -237,7 +242,7 @@ def test_cli_writes_manifest_and_discovers_all_partitions(tmp_path):
     assert root.attrs["dataset_id"] == "test-release-v0.1.0"
 
 
-def test_cli_records_explicit_daily_repair_in_manifest(tmp_path):
+def test_cli_records_explicit_daily_repair_in_manifest(tmp_path, capsys):
     legacy_root = tmp_path / "weather_data_alltimes"
     source = legacy_root / "ALMA" / "04Apr"
     _write_legacy_partition(source, _with_invalid_duplicate_daily_record(_complete_partition()))
@@ -274,6 +279,7 @@ def test_cli_records_explicit_daily_repair_in_manifest(tmp_path):
         ]
     ) == 0
 
+    assert "Importing" not in capsys.readouterr().out
     manifest = json.loads(
         (tmp_path / "repaired-release.zarr.manifest.json").read_text(encoding="utf-8")
     )
