@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import shutil
 import sys
+import time
 from uuid import uuid4
 
 import numpy as np
@@ -133,6 +134,14 @@ def _arguments() -> argparse.ArgumentParser:
             "coverage validates afterward."
         ),
     )
+    parser.add_argument(
+        "--progress",
+        action="store_true",
+        help=(
+            "Report completed partitions, elapsed time, and estimated remaining "
+            "time during the import."
+        ),
+    )
     parser.add_argument("--component-count", type=int, default=40)
     parser.add_argument("--frequency-start-ghz", type=float, default=0.0)
     parser.add_argument("--frequency-stop-ghz", type=float, default=2000.0)
@@ -151,6 +160,36 @@ def _staging_paths(output: Path, manifest_path: Path) -> tuple[Path, Path]:
     return (
         output.with_name(".{0}.partial-{1}".format(output.name, suffix)),
         manifest_path.with_name(".{0}.partial-{1}".format(manifest_path.name, suffix)),
+    )
+
+
+def _format_duration(seconds: float) -> str:
+    total_seconds = max(0, int(seconds))
+    hours, remaining_seconds = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remaining_seconds, 60)
+    return "{0}:{1:02d}:{2:02d}".format(hours, minutes, seconds)
+
+
+def _report_progress(
+    completed: int,
+    total: int,
+    selection: PartitionArgument,
+    started_at: float,
+) -> None:
+    elapsed = time.perf_counter() - started_at
+    remaining = (elapsed / completed) * (total - completed)
+    percent = 100.0 * completed / total
+    print(
+        "Completed {0}/{1} ({2:.1f}%): {3}/{4:02d}; elapsed {5}; ETA {6}".format(
+            completed,
+            total,
+            percent,
+            selection.site,
+            selection.month,
+            _format_duration(elapsed),
+            _format_duration(remaining),
+        ),
+        flush=True,
     )
 
 
@@ -184,6 +223,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     staged_output, staged_manifest = _staging_paths(output, manifest_path)
     imported: list[ImportedPartition] = []
+    started_at = time.perf_counter()
+
+    if args.progress:
+        print("Importing {0} site-month partitions...".format(len(selections)), flush=True)
 
     try:
         root = initialize_dataset(
@@ -236,6 +279,8 @@ def main(argv: list[str] | None = None) -> int:
                     removed_daily_records=removed_daily_records,
                 )
             )
+            if args.progress:
+                _report_progress(len(imported), len(selections), selection, started_at)
 
         removed_total = sum(item.removed_daily_records for item in imported)
         if removed_total:

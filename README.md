@@ -50,6 +50,10 @@ For the historic archive, add `--repair-invalid-daily-records` before
 `--all-partitions`. Do not use this option to conceal incomplete or newly
 generated inputs; those still fail validation.
 
+For large imports, add `--progress` to report every completed site-month
+partition with elapsed time and an estimate of the remaining time. Progress is
+reported only after a partition has been written and validated.
+
 Schema 0.2.0 additionally stores physical three-hour native summaries for
 each site-month. The summaries match `ngehtsim`'s representative weather
 forms (`mean`, `median`, `good`, and `bad`) and preserve raw native records
