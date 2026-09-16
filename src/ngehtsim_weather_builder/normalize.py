@@ -9,10 +9,12 @@ archive from the native records without modifying the source directory.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import csv
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -167,6 +169,36 @@ def _check_new_outputs(daily_output: Path, alltimes_output: Path, report: Path) 
             raise FileExistsError("Refusing to overwrite normalization output: {0}".format(path))
 
 
+@contextmanager
+def _normalization_lock(daily_output: Path):
+    """Reserve a daily-output destination for one normalization invocation.
+
+    The generated daily archive is the primary release artifact, so its parent
+    directory provides a stable location for a lock shared by retries that
+    target the same output. The lock is held across validation, staging, and
+    publication; this prevents two long-running commands from racing at the
+    final atomic rename.
+    """
+
+    daily_output.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = daily_output.with_name(".{0}.normalization.lock".format(daily_output.name))
+    try:
+        descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError as error:
+        raise RuntimeError(
+            "Another normalization command is already using {0}. "
+            "Wait for it to finish, or verify that it is stale before removing "
+            "the lock file.".format(daily_output)
+        ) from error
+
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write("pid={0}\n".format(os.getpid()))
+        yield
+    finally:
+        lock_path.unlink(missing_ok=True)
+
+
 def _staging_path(destination: Path) -> Path:
     """Return a sibling staging path so publication is an atomic rename."""
 
@@ -299,25 +331,16 @@ def _arguments() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    """Normalize a complete legacy archive and write a JSON provenance report."""
-
-    parser = _arguments()
-    args = parser.parse_args(argv)
-    input_root = args.input_root.resolve()
-    daily_output = args.daily_output.resolve()
-    alltimes_output = args.alltimes_output.resolve()
-    site_registry = args.site_registry.resolve()
-    report = args.report.resolve()
-
-    if not input_root.is_dir():
-        parser.error("--input-root is not a directory: {0}".format(input_root))
-    if not site_registry.is_file():
-        parser.error("--site-registry is not a file: {0}".format(site_registry))
-    if args.component_count <= 0:
-        parser.error("--component-count must be positive.")
-    if args.start_year > args.cutoff_date.year:
-        parser.error("--start-year cannot be after --cutoff-date.")
+def _run_normalization(
+    args: argparse.Namespace,
+    *,
+    input_root: Path,
+    daily_output: Path,
+    alltimes_output: Path,
+    site_registry: Path,
+    report: Path,
+) -> int:
+    """Build and atomically publish one fully validated normalized archive."""
 
     _check_new_outputs(daily_output, alltimes_output, report)
     partitions = _discover_partitions(input_root)
@@ -418,6 +441,37 @@ def main(argv: list[str] | None = None) -> int:
     print("Wrote normalized all-times archive to {0}".format(alltimes_output))
     print("Wrote normalization report to {0}".format(report))
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Normalize a complete legacy archive and write a JSON provenance report."""
+
+    parser = _arguments()
+    args = parser.parse_args(argv)
+    input_root = args.input_root.resolve()
+    daily_output = args.daily_output.resolve()
+    alltimes_output = args.alltimes_output.resolve()
+    site_registry = args.site_registry.resolve()
+    report = args.report.resolve()
+
+    if not input_root.is_dir():
+        parser.error("--input-root is not a directory: {0}".format(input_root))
+    if not site_registry.is_file():
+        parser.error("--site-registry is not a file: {0}".format(site_registry))
+    if args.component_count <= 0:
+        parser.error("--component-count must be positive.")
+    if args.start_year > args.cutoff_date.year:
+        parser.error("--start-year cannot be after --cutoff-date.")
+
+    with _normalization_lock(daily_output):
+        return _run_normalization(
+            args,
+            input_root=input_root,
+            daily_output=daily_output,
+            alltimes_output=alltimes_output,
+            site_registry=site_registry,
+            report=report,
+        )
 
 
 if __name__ == "__main__":

@@ -12,7 +12,7 @@ from ngehtsim_weather_builder.legacy import (
     read_legacy_partition,
     write_legacy_partition,
 )
-from ngehtsim_weather_builder.normalize import main
+from ngehtsim_weather_builder.normalize import _normalization_lock, main
 
 
 def _partition(year_month_days, component_count=2):
@@ -120,6 +120,19 @@ def test_normalizer_preserves_retained_binary_records_byte_for_byte(tmp_path):
 
     for source_file in sorted(source.glob("*.txt")):
         assert source_file.read_bytes() == (destination / source_file.name).read_bytes()
+
+
+def test_normalization_lock_rejects_concurrent_destination(tmp_path):
+    daily_output = tmp_path / "weather_data"
+
+    with _normalization_lock(daily_output):
+        lock_path = tmp_path / ".weather_data.normalization.lock"
+        assert lock_path.is_file()
+        with pytest.raises(RuntimeError, match="already using"):
+            with _normalization_lock(daily_output):
+                pass
+
+    assert not lock_path.exists()
 
 
 def _month_days(year, month):
