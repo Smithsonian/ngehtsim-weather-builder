@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 import struct
 
@@ -49,6 +50,20 @@ class DailyRecordRepair:
     """A validated legacy partition after removing malformed daily rows."""
 
     partition: WeatherPartition
+    removed_daily_records: int
+
+
+@dataclass(frozen=True)
+class NormalizedLegacyPartition:
+    """A legacy partition normalized against complete native weather records.
+
+    ``partition`` contains only valid records on or before an explicitly
+    requested release cutoff. The count fields describe rows removed from the
+    source partition; no retained weather value is interpolated or recomputed.
+    """
+
+    partition: WeatherPartition
+    removed_native_records: int
     removed_daily_records: int
 
 
@@ -187,6 +202,36 @@ def _date_rows(records: WeatherRecords) -> np.ndarray:
     return np.column_stack((records.year, records.month, records.day))
 
 
+def _date_keys(records: WeatherRecords) -> np.ndarray:
+    """Return sortable integer date keys without converting a large record stream."""
+
+    return (
+        records.year.astype(np.int64) * 10000
+        + records.month.astype(np.int64) * 100
+        + records.day.astype(np.int64)
+    )
+
+
+def _cutoff_mask(records: WeatherRecords, cutoff_date: date) -> np.ndarray:
+    """Select records whose calendar date is on or before ``cutoff_date``."""
+
+    cutoff_key = cutoff_date.year * 10000 + cutoff_date.month * 100 + cutoff_date.day
+    return _date_keys(records) <= cutoff_key
+
+
+def _finite_record_mask(records: WeatherRecords) -> np.ndarray:
+    """Return rows whose scalar and PCA values are all finite."""
+
+    return (
+        np.all(np.isfinite(records.tau_coefficients), axis=1)
+        & np.all(np.isfinite(records.tb_coefficients), axis=1)
+        & np.isfinite(records.pwv_mm)
+        & np.isfinite(records.wind_speed_m_s)
+        & np.isfinite(records.surface_pressure_mbar)
+        & np.isfinite(records.surface_temperature_k)
+    )
+
+
 def _validate_partition(partition: WeatherPartition, component_count: int) -> None:
     native = partition.native
     daily = partition.daily
@@ -290,6 +335,168 @@ def repair_invalid_daily_records(
         partition=repaired,
         removed_daily_records=int(np.count_nonzero(~valid)),
     )
+
+
+def normalize_legacy_partition(
+    directory: str | Path,
+    cutoff_date: date,
+    component_count: int = 40,
+) -> NormalizedLegacyPartition:
+    """Normalize one legacy partition for a date-bounded release.
+
+    Native three-hour records are the authoritative date stream. The function
+    drops native records after ``cutoff_date`` and retains exactly one finite
+    daily row for each remaining native date. Daily rows after the cutoff and
+    redundant non-finite duplicates are therefore removed. A finite duplicate
+    or a daily date absent from the native stream is ambiguous and is rejected
+    rather than chosen arbitrarily.
+
+    The returned records retain their original stored values and dtypes. This
+    operation does not average, interpolate, or otherwise recompute weather
+    quantities.
+    """
+
+    source = _load_legacy_partition(directory, component_count)
+    native_mask = _cutoff_mask(source.native, cutoff_date)
+    native = _select_records(source.native, native_mask)
+    _validate_record_arrays(native, component_count)
+
+    if native.time_index is None:
+        raise LegacyFormatError("Native weather records require a time index.")
+    native_dates = _date_keys(native)
+    unique_native_dates, native_counts = np.unique(native_dates, return_counts=True)
+    if np.any(native_counts != NATIVE_SAMPLES_PER_DAY):
+        raise LegacyFormatError(
+            "Every retained native date must contain exactly {0} samples.".format(
+                NATIVE_SAMPLES_PER_DAY
+            )
+        )
+    for native_date in unique_native_dates:
+        times = np.sort(native.time_index[native_dates == native_date])
+        expected = np.arange(NATIVE_SAMPLES_PER_DAY, dtype=times.dtype)
+        if not np.array_equal(times, expected):
+            raise LegacyFormatError(
+                "Retained native time indices must be the complete range 0 through {0}.".format(
+                    NATIVE_SAMPLES_PER_DAY - 1
+                )
+            )
+
+    daily_within_cutoff = _cutoff_mask(source.daily, cutoff_date)
+    daily_dates = _date_keys(source.daily)
+    retained_daily_dates = daily_dates[daily_within_cutoff]
+    unexpected_dates = np.setdiff1d(retained_daily_dates, unique_native_dates)
+    if unexpected_dates.size:
+        raise LegacyFormatError(
+            "Daily weather records contain retained dates absent from the native stream."
+        )
+
+    daily_finite = _finite_record_mask(source.daily)
+    daily_mask = daily_within_cutoff & daily_finite
+    selected_daily_dates = daily_dates[daily_mask]
+    unique_daily_dates, daily_counts = np.unique(selected_daily_dates, return_counts=True)
+    if not np.array_equal(unique_daily_dates, unique_native_dates):
+        raise LegacyFormatError(
+            "Daily weather records do not retain exactly one finite row for every native date."
+        )
+    if np.any(daily_counts != 1):
+        raise LegacyFormatError(
+            "Daily weather records contain multiple finite rows for a retained date."
+        )
+
+    normalized = WeatherPartition(
+        native=native,
+        daily=_select_records(source.daily, daily_mask),
+    )
+    _validate_partition(normalized, component_count)
+    return NormalizedLegacyPartition(
+        partition=normalized,
+        removed_native_records=source.native.count - normalized.native.count,
+        removed_daily_records=source.daily.count - normalized.daily.count,
+    )
+
+
+def _records_as_structured(
+    records: WeatherRecords,
+    component_count: int,
+    with_time: bool,
+    atmospheric: bool,
+) -> np.ndarray:
+    """Encode one weather field using the legacy binary record dtype."""
+
+    dtype = _record_dtype(component_count, with_time, coefficients=atmospheric)
+    encoded = np.empty(records.count, dtype=dtype)
+    encoded["year"] = records.year
+    encoded["month"] = records.month
+    encoded["day"] = records.day
+    if with_time:
+        if records.time_index is None:
+            raise LegacyFormatError("Native records require a time index when written.")
+        encoded["time_index"] = records.time_index
+    return encoded
+
+
+def _write_binary(path: Path, records: np.ndarray) -> None:
+    """Write one legacy binary record array, refusing to replace an existing file."""
+
+    if path.exists():
+        raise FileExistsError("Refusing to overwrite legacy weather file: {0}".format(path))
+    path.write_bytes(struct.pack("<H", records.dtype.itemsize) + records.tobytes())
+
+
+def _write_records(
+    directory: Path,
+    records: WeatherRecords,
+    suffix: str,
+    component_count: int,
+    with_time: bool,
+) -> None:
+    """Write the six weather quantities for one cadence of a partition."""
+
+    atmospheric_fields = {
+        "tau": records.tau_coefficients,
+        "Tb": records.tb_coefficients,
+    }
+    scalar_fields = {
+        "PWV": records.pwv_mm,
+        "windspeed": records.wind_speed_m_s,
+        "Pbase": records.surface_pressure_mbar,
+        "Tbase": records.surface_temperature_k,
+    }
+    for name, values in atmospheric_fields.items():
+        encoded = _records_as_structured(records, component_count, with_time, atmospheric=True)
+        encoded["value"] = values
+        _write_binary(directory / "{0}{1}.txt".format(name, suffix), encoded)
+    for name, values in scalar_fields.items():
+        encoded = _records_as_structured(records, component_count, with_time, atmospheric=False)
+        encoded["value"] = values
+        _write_binary(directory / "{0}{1}.txt".format(name, suffix), encoded)
+
+
+def write_legacy_partition(
+    directory: str | Path,
+    partition: WeatherPartition,
+    component_count: int = 40,
+    include_native: bool = True,
+) -> None:
+    """Write a validated legacy partition without changing stored values.
+
+    Set ``include_native`` to ``False`` to write only the six daily files used
+    by the legacy :mod:`ngehtsim` runtime. The default writes the twelve-file
+    archive containing both daily and native three-hour records.
+    """
+
+    validate_partition(partition, component_count)
+    destination = Path(directory)
+    destination.mkdir(parents=True, exist_ok=False)
+    _write_records(destination, partition.daily, "", component_count, with_time=False)
+    if include_native:
+        _write_records(
+            destination,
+            partition.native,
+            "_alltimes",
+            component_count,
+            with_time=True,
+        )
 
 
 def validate_partition(partition: WeatherPartition, component_count: int | None = None) -> None:

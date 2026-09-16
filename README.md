@@ -11,6 +11,35 @@ The `legacy/` directory preserves the current preprocessing scripts as a
 reference implementation. New modules will replace that workflow with a
 validated pipeline that publishes immutable Zarr dataset releases.
 
+## Normalize a legacy release archive
+
+Before importing an updated legacy archive, normalize it into new output
+directories with an explicit month-end cutoff. The normalizer uses the native
+three-hour records as the authoritative date stream, removes records after the
+cutoff, and retains exactly one finite daily record per native date. It rejects
+missing coverage and ambiguous duplicate daily rows rather than selecting or
+interpolating values.
+
+For example, this produces a release-quality archive through July 2026 without
+modifying the raw cluster outputs:
+
+```bash
+ngehtsim-weather-normalize-legacy \
+  --input-root /path/to/weather_data_alltimes \
+  --daily-output /path/to/normalized/weather_data \
+  --alltimes-output /path/to/normalized/weather_data_alltimes \
+  --site-registry /path/to/Telescope_Site_Matrix.csv \
+  --cutoff-date 2026-07-31 \
+  --report /path/to/normalized/weather-normalization-v0.2.1.json \
+  --progress
+```
+
+The report records every retained partition and the number of discarded native
+and daily rows. The output roots are written through sibling staging paths and
+are never overwritten. The normalized daily files in the two output roots are
+identical, so copy `weather_data` into the legacy `ngehtsim` package and use
+`weather_data_alltimes` as the input to the strict Zarr importer.
+
 ## Validated legacy import
 
 `ngehtsim-weather-import-legacy` creates a new Zarr release from explicitly
@@ -21,12 +50,13 @@ and complete calendar-month coverage, then writes a sidecar JSON manifest.
 The output Zarr directory and its adjacent `.manifest.json` file are immutable
 release artifacts. The command refuses to overwrite either one.
 
-The default import is strict and refuses malformed legacy records. The
-historic archive currently contains a known daily-postprocessing defect. Use
-`--repair-invalid-daily-records` only for that archive: it removes non-finite
-daily rows, then proceeds only if the untouched native records prove that
-complete, one-record-per-date daily coverage remains. Each removal is recorded
-in the output Zarr attributes and manifest.
+The default import is strict and refuses malformed legacy records. Always
+normalize a new release archive first; normalized inputs import without
+`--repair-invalid-daily-records` and must report zero repaired rows. The
+`--repair-invalid-daily-records` option remains only for historical archives
+that predate the normalizer. It removes non-finite daily rows, then proceeds
+only if the untouched native records prove that complete, one-record-per-date
+daily coverage remains.
 
 For example, this creates a small April validation release from the existing
 legacy archive:
@@ -46,9 +76,10 @@ ngehtsim-weather-import-legacy \
 Replace the final `--partition` argument with `--all-partitions` to import a
 complete legacy archive rooted at `--legacy-root`.
 
-For the historic archive, add `--repair-invalid-daily-records` before
-`--all-partitions`. Do not use this option to conceal incomplete or newly
-generated inputs; those still fail validation.
+For a historical archive that cannot be normalized, add
+`--repair-invalid-daily-records` before `--all-partitions`. Do not use this
+option to conceal incomplete or newly generated inputs; those still fail
+validation.
 
 For large imports, add `--progress` to report every completed site-month
 partition with elapsed time and an estimate of the remaining time. Progress is
